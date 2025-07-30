@@ -4,3 +4,7 @@ googletrans==4.0.0rc1
 opencv-python-headless
 Pillow
 numpy
+torch
+torchvision
+scikit-image
+python-bidi
