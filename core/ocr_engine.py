@@ -24,7 +24,7 @@ class OCREngine:
             min_confidence: Minimum confidence threshold for text detection
         """
         if languages is None:
-            languages = ['ch_sim', 'en', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'ja', 'ko']
+            languages = ['en']  # Start with English only, can be expanded
         
         self.languages = languages
         self.min_confidence = min_confidence

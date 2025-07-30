@@ -300,46 +300,168 @@ class ImageProcessor:
             bbox_rect = region['bbox_rect']
             x, y, w, h = bbox_rect
             
-            # Estimate font size based on bounding box
-            font_size = int(h * 0.7)  # Use 70% of height
-            font_size = max(8, min(font_size, 200))  # Reasonable bounds
-            
             # Detect text properties
             is_bold = region.get('is_bold', False)
             language = region.get('target_language', 'uk')
             
-            # Get appropriate font
-            font = self.get_best_font(text, font_size, language, is_bold)
+            # Smart font size calculation with text fitting
+            font_size, fitted_text = self._calculate_optimal_font_size(
+                text, w, h, language, is_bold, draw
+            )
             
-            # Calculate text position for centering
-            bbox_text = draw.textbbox((0, 0), text, font=font)
+            # Get appropriate font
+            font = self.get_best_font(fitted_text, font_size, language, is_bold)
+            
+            # Calculate text position for centering within bounds
+            bbox_text = draw.textbbox((0, 0), fitted_text, font=font)
             text_width = bbox_text[2] - bbox_text[0]
             text_height = bbox_text[3] - bbox_text[1]
             
-            # Center text in bounding box
+            # Ensure text fits within bounding box
+            if text_width > w or text_height > h:
+                # Try smaller font size
+                font_size = int(font_size * 0.8)
+                font = self.get_best_font(fitted_text, font_size, language, is_bold)
+                bbox_text = draw.textbbox((0, 0), fitted_text, font=font)
+                text_width = bbox_text[2] - bbox_text[0]
+                text_height = bbox_text[3] - bbox_text[1]
+            
+            # Center text in bounding box with constraints
             center_x = x + w // 2
             center_y = y + h // 2
-            text_x = center_x - text_width // 2
-            text_y = center_y - text_height // 2
+            text_x = max(x, center_x - text_width // 2)
+            text_y = max(y, center_y - text_height // 2)
+            
+            # Ensure text doesn't exceed right/bottom bounds
+            if text_x + text_width > x + w:
+                text_x = x + w - text_width
+            if text_y + text_height > y + h:
+                text_y = y + h - text_height
             
             # Determine text color based on background
             text_color, outline_color = self._get_optimal_colors(image, x, y, w, h)
             
             # Draw text with outline for better visibility
-            outline_width = max(1, font_size // 20)
+            outline_width = max(1, font_size // 25)  # Thinner outline for better fit
             
             # Draw outline
             for dx in range(-outline_width, outline_width + 1):
                 for dy in range(-outline_width, outline_width + 1):
                     if dx != 0 or dy != 0:
-                        draw.text((text_x + dx, text_y + dy), text, font=font, fill=outline_color)
+                        draw.text((text_x + dx, text_y + dy), fitted_text, font=font, fill=outline_color)
             
             # Draw main text
-            draw.text((text_x, text_y), text, font=font, fill=text_color)
+            draw.text((text_x, text_y), fitted_text, font=font, fill=text_color)
             
-            logger.debug(f"Added text '{text}' at ({text_x}, {text_y}) with font size {font_size}")
+            logger.debug(f"Added text '{fitted_text}' at ({text_x}, {text_y}) with font size {font_size}")
         
         return result_image
+    
+    def _calculate_optimal_font_size(self, text: str, max_width: int, max_height: int, 
+                                   language: str, is_bold: bool, draw: ImageDraw.Draw) -> tuple:
+        """
+        Calculate optimal font size and handle text wrapping if needed.
+        
+        Args:
+            text: Text to fit
+            max_width: Maximum width available
+            max_height: Maximum height available  
+            language: Language code
+            is_bold: Whether text is bold
+            draw: ImageDraw object for text measurement
+            
+        Returns:
+            Tuple of (font_size, fitted_text)
+        """
+        # Start with height-based font size
+        initial_font_size = int(max_height * 0.6)  # More conservative than 0.7
+        initial_font_size = max(8, min(initial_font_size, 100))  # Reasonable bounds
+        
+        # Try to fit text at this size
+        for font_size in range(initial_font_size, 7, -2):  # Decrease in steps of 2
+            font = self.get_best_font(text, font_size, language, is_bold)
+            
+            # Measure text dimensions
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            
+            # If text fits, we're done
+            if text_width <= max_width and text_height <= max_height:
+                return font_size, text
+        
+        # If text still doesn't fit, try word wrapping for multi-word text
+        words = text.split()
+        if len(words) > 1:
+            return self._fit_text_with_wrapping(words, max_width, max_height, language, is_bold, draw)
+        
+        # Last resort: truncate text
+        font_size = max(8, int(max_height * 0.4))
+        font = self.get_best_font(text, font_size, language, is_bold)
+        
+        # Find maximum characters that fit
+        for i in range(len(text), 0, -1):
+            truncated = text[:i] + ('...' if i < len(text) else '')
+            bbox = draw.textbbox((0, 0), truncated, font=font)
+            text_width = bbox[2] - bbox[0]
+            
+            if text_width <= max_width:
+                return font_size, truncated
+        
+        # Ultimate fallback
+        return 8, text[:3] + '...'
+    
+    def _fit_text_with_wrapping(self, words: List[str], max_width: int, max_height: int,
+                               language: str, is_bold: bool, draw: ImageDraw.Draw) -> tuple:
+        """
+        Try to fit text with line wrapping.
+        
+        Args:
+            words: List of words to fit
+            max_width: Maximum width available
+            max_height: Maximum height available
+            language: Language code  
+            is_bold: Whether text is bold
+            draw: ImageDraw object
+            
+        Returns:
+            Tuple of (font_size, fitted_text)
+        """
+        # Try different font sizes for wrapped text
+        for font_size in range(int(max_height * 0.3), 7, -1):
+            font = self.get_best_font(' '.join(words), font_size, language, is_bold)
+            
+            # Try to fit words on multiple lines
+            lines = []
+            current_line = []
+            
+            for word in words:
+                test_line = current_line + [word]
+                test_text = ' '.join(test_line)
+                
+                bbox = draw.textbbox((0, 0), test_text, font=font)
+                line_width = bbox[2] - bbox[0]
+                
+                if line_width <= max_width:
+                    current_line = test_line
+                else:
+                    if current_line:  # Save current line and start new one
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                    else:  # Single word is too long
+                        lines.append(word[:max(1, max_width // (font_size // 2))] + '...')
+                        current_line = []
+            
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            # Check if all lines fit vertically
+            total_height = len(lines) * font_size * 1.2  # Line spacing
+            if total_height <= max_height:
+                return font_size, '\n'.join(lines)
+        
+        # Fallback to single line with truncation
+        return self._calculate_optimal_font_size(' '.join(words[:2]) + '...', max_width, max_height, language, is_bold, draw)
     
     def _get_optimal_colors(self, image: Image.Image, x: int, y: int, w: int, h: int) -> Tuple[str, str]:
         """

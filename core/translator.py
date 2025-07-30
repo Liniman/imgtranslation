@@ -86,9 +86,41 @@ class TranslationEngine:
         self.translation_cache[cache_key] = result if result[1] > 0 else (text, 0.0)
         return self.translation_cache[cache_key]
     
+    def _get_supplement_dictionary(self, target_lang: str) -> Dict[str, str]:
+        """Get supplement-specific translation dictionary."""
+        if target_lang == 'uk':  # Ukrainian
+            return {
+                'softgel': 'м\'яка капсула',
+                'liquid softgel': 'рідка м\'яка капсула', 
+                'capsule': 'капсула',
+                'tablet': 'таблетка',
+                'daily': 'щодня',
+                'take': 'приймайте',
+                'take 1': 'приймайте 1',
+                'omega-3': 'омега-3',
+                'fish oil': 'риб\'ячий жир',
+                'triple strength': 'потрійна сила',
+                'mg': 'мг',
+                'mcg': 'мкг'
+            }
+        return {}
+    
+    def _apply_supplement_dictionary(self, text: str, translated: str, target_lang: str) -> str:
+        """Apply supplement-specific terminology corrections."""
+        dictionary = self._get_supplement_dictionary(target_lang)
+        
+        # Apply dictionary replacements
+        corrected = translated
+        for english_term, target_term in dictionary.items():
+            # Case-insensitive replacement
+            pattern = re.compile(re.escape(english_term), re.IGNORECASE)
+            corrected = pattern.sub(target_term, corrected)
+        
+        return corrected
+    
     def _translate_with_provider(self, text: str, target_lang: str, source_lang: str, provider: str) -> Tuple[str, float]:
         """
-        Translate text using specific provider.
+        Translate text using specific provider with domain-specific improvements.
         
         Args:
             text: Text to translate
@@ -113,11 +145,14 @@ class TranslationEngine:
                 result = translator.translate(text, dest=target_lang, src=source_lang)
                 translated = result.text
                 
-                # Calculate quality score
-                quality = self._calculate_translation_quality(text, translated, target_lang)
+                # Apply domain-specific corrections
+                corrected = self._apply_supplement_dictionary(text, translated, target_lang)
                 
-                logger.debug(f"Google Translate: '{text}' -> '{translated}' (quality: {quality:.2f})")
-                return translated, quality
+                # Calculate quality score on corrected translation
+                quality = self._calculate_translation_quality(text, corrected, target_lang)
+                
+                logger.debug(f"Google Translate: '{text}' -> '{translated}' -> '{corrected}' (quality: {quality:.2f})")
+                return corrected, quality
                 
         except Exception as e:
             logger.error(f"Translation failed with {provider}: {e}")
@@ -125,7 +160,7 @@ class TranslationEngine:
     
     def _clean_text(self, text: str) -> str:
         """
-        Clean and prepare text for translation.
+        Clean and prepare text for translation with context awareness.
         
         Args:
             text: Raw text from OCR
@@ -144,21 +179,23 @@ class TranslationEngine:
         cleaned = re.sub(r'\.{4,}', '...', cleaned)  # Normalize multiple dots
         cleaned = re.sub(r',{2,}', ',', cleaned)  # Remove multiple commas
         
-        # Fix common character substitutions
-        char_fixes = {
-            '0': 'O',  # Zero to O in some contexts
-            '1': 'I',  # One to I in some contexts
-            '5': 'S',  # Five to S in some contexts
+        # Context-aware cleaning for supplements/medical text
+        # Fix common supplement text patterns
+        supplement_patterns = {
+            r'Take\s+(\d+)\s+liquid': r'Take \1 liquid softgel',  # Fix incomplete OCR
+            r'softgel\s+daily': 'softgel daily',  # Normalize spacing
+            r'(\d+)\s*mg': r'\1 mg',  # Fix spacing in dosages
+            r'(\d+)\s*mcg': r'\1 mcg',  # Fix spacing in dosages
         }
         
-        # Apply fixes only if they make sense contextually
-        # This is a simplified approach - more sophisticated methods would use language models
+        for pattern, replacement in supplement_patterns.items():
+            cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
         
         return cleaned.strip()
     
     def _calculate_translation_quality(self, original: str, translated: str, target_lang: str) -> float:
         """
-        Calculate translation quality score.
+        Calculate translation quality score with improved detection.
         
         Args:
             original: Original text
@@ -178,29 +215,50 @@ class TranslationEngine:
         if length_ratio < 0.2 or length_ratio > 5.0:  # Too short or too long
             score *= 0.5
         
-        # Check for untranslated parts (still in original language)
+        # Check for mixed-language results (major quality issue)
         if target_lang == 'uk':  # Ukrainian
-            # If translating to Ukrainian, check for Latin characters
+            # Count Latin vs Cyrillic characters
             latin_chars = sum(1 for c in translated if c.isascii() and c.isalpha())
-            total_chars = sum(1 for c in translated if c.isalpha())
-            if total_chars > 0 and latin_chars / total_chars > 0.7:
-                score *= 0.3  # Likely not translated properly
+            cyrillic_chars = sum(1 for c in translated if '\u0400' <= c <= '\u04FF')
+            total_chars = latin_chars + cyrillic_chars
+            
+            if total_chars > 0:
+                latin_ratio = latin_chars / total_chars
+                # Penalize mixed-language results heavily
+                if 0.2 < latin_ratio < 0.8:  # Mixed language - bad!
+                    score *= 0.2
+                elif latin_ratio > 0.8:  # Mostly untranslated - very bad!
+                    score *= 0.1
+        
+        # Check for untranslated technical terms that should be translated
+        untranslated_terms = ['softgel', 'capsule', 'tablet', 'liquid', 'daily', 'take']
+        untranslated_count = sum(1 for term in untranslated_terms 
+                               if term.lower() in translated.lower())
+        if untranslated_count > 0:
+            score *= max(0.3, 1.0 - (untranslated_count * 0.2))
+        
+        # Check for literal translation issues
+        literal_issues = [
+            ('liquid', 'рідину'),  # Wrong context - should be about capsules
+            ('take 1 liquid', 'візьміть 1 рідину'),  # Completely wrong context
+        ]
+        
+        for original_phrase, bad_translation in literal_issues:
+            if original_phrase.lower() in original.lower() and bad_translation.lower() in translated.lower():
+                score *= 0.1  # Very bad literal translation
         
         # Check for common translation errors
         error_indicators = [
-            'Error',
-            'Failed',
-            'Unable',
-            '错误',  # Chinese error
-            'エラー',  # Japanese error
+            'Error', 'Failed', 'Unable',
+            '错误', 'エラー',  # Other languages
         ]
         
         if any(indicator in translated for indicator in error_indicators):
             score *= 0.1
         
-        # Bonus for reasonable character diversity
+        # Bonus for good character diversity (but not too much)
         unique_chars = len(set(translated.lower()))
-        if unique_chars > 3:  # At least some character diversity
+        if 3 < unique_chars < 20:  # Reasonable diversity
             score *= 1.1
         
         return min(score, 1.0)
