@@ -1405,10 +1405,10 @@ def process_image_with_translation(image: Image.Image, target_lang: str, engines
         if progress_callback:
             progress_callback("Rendering final text...", 95)
         
-        # Only render text for regions that should have text (not removed regions)
+        # Only render text for regions that are marked for translation (not keep or remove)
         regions_to_render = [
             region for region in text_regions 
-            if region.get('action', 'translate') != 'remove' and region.get('translated_text', '')
+            if region.get('action', 'translate') == 'translate' and region.get('translated_text', '')
         ]
         
         final_image = image_processor.add_translated_text(inpainted_image, regions_to_render)
@@ -1817,10 +1817,10 @@ def main():
                                     else:
                                         inpainted_image = processed_image.copy()
                                     
-                                    # Only render text for regions that should have text (not removed regions)
+                                    # Only render text for regions that are marked for translation (not keep or remove)
                                     regions_to_render = [
                                         region for region in result['text_regions'] 
-                                        if region.get('action', 'translate') != 'remove' and region.get('translated_text', '')
+                                        if region.get('action', 'translate') == 'translate' and region.get('translated_text', '')
                                     ]
                                     
                                     final_image = image_processor.add_translated_text(inpainted_image, regions_to_render)
