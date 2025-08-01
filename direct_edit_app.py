@@ -476,30 +476,38 @@ def load_engines():
         st.error(f"Failed to initialize processing engines: {e}")
         st.stop()
 
-def create_ocr_visualization_html(image: Image.Image, text_regions: List[Dict], 
-                                 selected_regions: List[bool] = None) -> str:
+def create_ocr_visualization_html_3state(image: Image.Image, text_regions: List[Dict], 
+                                        region_actions: List[str] = None) -> str:
     """
-    Create HTML for OCR visualization with selectable bounding boxes.
+    Create HTML for OCR visualization with 3-state action control.
     
     Args:
         image: PIL Image to display
         text_regions: List of text regions with bounding boxes
-        selected_regions: List of booleans for each region's selection state
+        region_actions: List of actions for each region ('translate', 'keep', 'remove')
         
     Returns:
-        HTML string with selectable OCR regions
+        HTML string with 3-state OCR region controls
     """
-    if selected_regions is None:
-        selected_regions = [True] * len(text_regions)
+    if region_actions is None:
+        region_actions = ['translate'] * len(text_regions)
     
     # Convert image to base64 for embedding
     buffered = io.BytesIO()
     image.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode()
     
-    # Calculate image display dimensions
-    display_width = min(800, image.width)
-    display_height = int(image.height * (display_width / image.width))
+    # Calculate image display dimensions - use container width or max 1000px
+    max_width = min(1000, image.width)
+    max_height = 600  # Max height to prevent very tall images
+    
+    # Calculate scaling to fit within bounds while maintaining aspect ratio
+    width_scale = max_width / image.width
+    height_scale = max_height / image.height
+    scale = min(width_scale, height_scale, 1.0)  # Don't upscale
+    
+    display_width = int(image.width * scale)
+    display_height = int(image.height * scale)
     
     # Scale factors for positioning overlays
     scale_x = display_width / image.width
@@ -529,46 +537,69 @@ def create_ocr_visualization_html(image: Image.Image, text_regions: List[Dict],
         scaled_h = int(h * scale_y)
         
         confidence = region.get('confidence', 0.0)
-        is_selected = selected_regions[i] if i < len(selected_regions) else True
+        action = region_actions[i] if i < len(region_actions) else 'translate'
         
-        # Color based on selection and confidence
-        if is_selected:
-            border_color = "#22c55e" if confidence > 0.8 else "#ef4444"  # Green for high conf, red for low
-            bg_color = "rgba(34, 197, 94, 0.1)" if confidence > 0.8 else "rgba(239, 68, 68, 0.1)"
-        else:
-            border_color = "#6b7280"  # Gray for unselected
-            bg_color = "rgba(107, 114, 128, 0.05)"
+        # Color and icon based on action
+        if action == 'translate':
+            border_color = "#22c55e"  # Green for translate
+            bg_color = "rgba(34, 197, 94, 0.15)"
+            icon = "🌍"
+            icon_bg = "#22c55e"
+        elif action == 'keep':
+            border_color = "#3b82f6"  # Blue for keep
+            bg_color = "rgba(59, 130, 246, 0.15)"
+            icon = "📝"
+            icon_bg = "#3b82f6"
+        else:  # remove
+            border_color = "#ef4444"  # Red for remove
+            bg_color = "rgba(239, 68, 68, 0.15)"
+            icon = "🗑️"
+            icon_bg = "#ef4444"
+        
+        # Truncate long text for display
+        display_text = region['text'][:30] + "..." if len(region['text']) > 30 else region['text']
         
         html_parts.append(f'''
-        <div class="ocr-region {'selected' if is_selected else 'unselected'}" 
+        <div class="ocr-region ocr-{action}" 
              id="ocr-region-{i}"
              data-region-index="{i}"
+             data-action="{action}"
              style="position: absolute; left: {scaled_x}px; top: {scaled_y}px; 
                     width: {scaled_w}px; height: {scaled_h}px;
                     border: 2px solid {border_color};
                     background: {bg_color};
                     cursor: pointer;
-                    z-index: 10;"
-             onclick="toggleRegion({i})"
-             title="Text: {region['text'][:50]}... | Confidence: {confidence:.2f}">
+                    z-index: 10;
+                    transition: all 0.2s ease;"
+             onclick="toggleRegionAction({i})"
+             title="Action: {action.upper()} | Text: {region['text']} | Confidence: {confidence:.2f} | Click to cycle actions">
             
-            <!-- Checkbox indicator -->
-            <div style="position: absolute; top: -8px; left: -8px; 
-                        width: 16px; height: 16px; 
-                        background: {'#22c55e' if is_selected else '#6b7280'}; 
+            <!-- Action indicator -->
+            <div style="position: absolute; top: -10px; left: -10px; 
+                        width: 20px; height: 20px; 
+                        background: {icon_bg}; 
                         border: 2px solid white; 
-                        border-radius: 3px;
+                        border-radius: 50%;
                         display: flex; align-items: center; justify-content: center;
-                        font-size: 10px; color: white; font-weight: bold;">
-                {'✓' if is_selected else ''}
+                        font-size: 10px; color: white; font-weight: bold;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                {icon}
             </div>
             
             <!-- Region number -->
             <div style="position: absolute; top: 2px; right: 2px; 
-                        background: rgba(0,0,0,0.7); color: white; 
-                        padding: 2px 4px; font-size: 10px; 
-                        border-radius: 2px;">
+                        background: rgba(0,0,0,0.8); color: white; 
+                        padding: 2px 6px; font-size: 11px; 
+                        border-radius: 3px; font-weight: bold;">
                 #{i+1}
+            </div>
+            
+            <!-- Confidence indicator -->
+            <div style="position: absolute; bottom: 2px; left: 2px; 
+                        background: rgba(0,0,0,0.7); color: white; 
+                        padding: 1px 4px; font-size: 9px; 
+                        border-radius: 2px;">
+                {confidence:.0%}
             </div>
         </div>
         ''')
@@ -1134,6 +1165,39 @@ def create_javascript_handler(current_adjustments: Dict = None) -> str:
     window.reinitializeDragHandlers = function() {{
         setTimeout(initializeDragAndDrop, 100);
     }};
+    
+    // Global variable to track current actions
+    window.currentRegionActions = [];
+    
+    // Update Streamlit input with current actions
+    window.updateRegionActions = function(actions) {{
+        console.log('updateRegionActions called with:', actions);
+        window.currentRegionActions = actions;
+        
+        // Find and update the Streamlit input
+        const streamlitInputs = document.querySelectorAll('input[type="text"]');
+        for (let input of streamlitInputs) {{
+            if (input.value && (input.value.includes('translate') || input.value.includes('keep') || input.value.includes('remove'))) {{
+                input.value = JSON.stringify(actions);
+                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                break;
+            }}
+        }}
+    }};
+    
+    // Simplified updateStreamlitActions - just reads DOM and updates state
+    window.updateStreamlitActions = function() {{
+        const allRegions = document.querySelectorAll('.ocr-region');
+        const actions = [];
+        
+        allRegions.forEach((region, index) => {{
+            const action = region.getAttribute('data-action') || 'translate';
+            actions.push(action);
+        }});
+        
+        window.updateRegionActions(actions);
+    }};
     </script>
     '''
 
@@ -1255,48 +1319,103 @@ def process_image_with_translation(image: Image.Image, target_lang: str, engines
             'regions_detected': len(text_regions)
         }
         
-        # Step 3: Translate text
+        # Step 3: Translate text based on region actions
         step_start = time.time()
         if progress_callback:
-            progress_callback("Translating text...", 50)
+            progress_callback("Processing text regions...", 50)
         
-        texts_to_translate = [region['text'] for region in text_regions]
-        translations = translation_engine.translate_batch(texts_to_translate, target_lang)
+        # Process regions based on their actions (translate, keep, remove)
+        texts_to_translate = []
+        translate_indices = []
         
-        # Combine translations with regions
-        for i, (translated_text, quality) in enumerate(translations):
-            if i < len(text_regions):
-                text_regions[i]['translated_text'] = translated_text
-                text_regions[i]['translation_quality'] = quality
-                text_regions[i]['target_language'] = target_lang
+        for i, region in enumerate(text_regions):
+            action = region.get('action', 'translate')  # Default to translate for backwards compatibility
+            
+            if action == 'translate':
+                texts_to_translate.append(region['text'])
+                translate_indices.append(i)
+            elif action == 'keep':
+                # Keep original text, mark as processed
+                region['translated_text'] = region['text']
+                region['translation_quality'] = 1.0  # Original text has perfect "quality"
+                region['target_language'] = target_lang
+                region['action_taken'] = 'kept_original'
+            elif action == 'remove':
+                # Mark for removal - no text will be rendered
+                region['translated_text'] = ''
+                region['translation_quality'] = 0.0
+                region['target_language'] = target_lang
+                region['should_remove'] = True
+                region['action_taken'] = 'removed'
+        
+        # Only translate regions marked for translation
+        if texts_to_translate:
+            translations = translation_engine.translate_batch(texts_to_translate, target_lang)
+            
+            # Apply translations back to the correct regions
+            for idx, (translated_text, quality) in enumerate(translations):
+                if idx < len(translate_indices):
+                    region_idx = translate_indices[idx]
+                    text_regions[region_idx]['translated_text'] = translated_text
+                    text_regions[region_idx]['translation_quality'] = quality
+                    text_regions[region_idx]['target_language'] = target_lang
+                    text_regions[region_idx]['action_taken'] = 'translated'
+        
+        # Count regions by action for statistics
+        action_counts = {
+            'translated': len(translate_indices),
+            'kept': len([r for r in text_regions if r.get('action') == 'keep']),
+            'removed': len([r for r in text_regions if r.get('action') == 'remove'])
+        }
         
         result['processing_steps']['translation'] = {
             'time': time.time() - step_start,
-            'texts_translated': len(translations)
+            'texts_translated': action_counts['translated'],
+            'texts_kept': action_counts['kept'],
+            'texts_removed': action_counts['removed'],
+            'total_regions': len(text_regions)
         }
         
         # Step 4: Create inpainting mask and inpaint
         step_start = time.time()
         if progress_callback:
-            progress_callback("Removing original text...", 75)
+            progress_callback("Processing image regions...", 75)
         
-        mask = image_processor.create_enhanced_mask(processed_image, text_regions)
-        inpainted_image = image_processor.enhanced_inpainting(processed_image, mask)
+        # Create mask only for regions that need inpainting (translate + remove)
+        regions_to_inpaint = [
+            region for region in text_regions 
+            if region.get('action', 'translate') in ['translate', 'remove']
+        ]
+        
+        if regions_to_inpaint:
+            mask = image_processor.create_enhanced_mask(processed_image, regions_to_inpaint)
+            inpainted_image = image_processor.enhanced_inpainting(processed_image, mask)
+        else:
+            # No regions need inpainting, use original image
+            inpainted_image = processed_image.copy()
         
         result['processing_steps']['inpainting'] = {
             'time': time.time() - step_start,
-            'mask_coverage': np.sum(np.array(mask) > 0) / (mask.width * mask.height)
+            'regions_inpainted': len(regions_to_inpaint),
+            'mask_coverage': np.sum(np.array(mask) > 0) / (mask.width * mask.height) if regions_to_inpaint else 0.0
         }
         
-        # Step 5: Add translated text to get final result
+        # Step 5: Add text to get final result (only for translate and keep actions)
         step_start = time.time()
         if progress_callback:
-            progress_callback("Adding translated text...", 95)
+            progress_callback("Rendering final text...", 95)
         
-        final_image = image_processor.add_translated_text(inpainted_image, text_regions)
+        # Only render text for regions that should have text (not removed regions)
+        regions_to_render = [
+            region for region in text_regions 
+            if region.get('action', 'translate') != 'remove' and region.get('translated_text', '')
+        ]
+        
+        final_image = image_processor.add_translated_text(inpainted_image, regions_to_render)
         
         result['processing_steps']['text_rendering'] = {
-            'time': time.time() - step_start
+            'time': time.time() - step_start,
+            'texts_rendered': len(regions_to_render)
         }
         
         # Scale back to original size if needed
@@ -1404,7 +1523,18 @@ def main():
             if uploaded_file:
                 with st.spinner("Processing image..."):
                     image = Image.open(uploaded_file)
+                    
+                    # Apply region actions if they exist
+                    def apply_region_actions(result):
+                        if 'region_actions' in st.session_state and result['success']:
+                            for i, region in enumerate(result['text_regions']):
+                                if i < len(st.session_state['region_actions']):
+                                    region['action'] = st.session_state['region_actions'][i]
+                        return result
+                    
                     result = process_image_with_translation(image, target_lang, engines)
+                    result = apply_region_actions(result)
+                    
                     st.session_state['processing_result'] = result
                     st.session_state['target_lang'] = target_lang
                     st.session_state['text_adjustments'] = {}  # Reset adjustments
@@ -1460,88 +1590,160 @@ def main():
                             st.metric("Scale Factor", f"{result['processing_steps']['validation']['scale_factor']:.2f}")
                 
                 with step_tabs[1]:
-                    st.markdown("**Interactive OCR Region Selection** - Click boxes to select/unselect")
+                    st.markdown("**Interactive OCR Region Control** - Choose action for each text region")
                     
-                    # Initialize region selection state
-                    if 'selected_regions' not in st.session_state:
-                        st.session_state['selected_regions'] = [True] * len(result['text_regions'])
+                    # Initialize region actions state (3-state system)
+                    if 'region_actions' not in st.session_state:
+                        st.session_state['region_actions'] = ['translate'] * len(result['text_regions'])
                     
-                    # Control buttons
+                    # Ensure region_actions matches the number of text regions
+                    while len(st.session_state['region_actions']) < len(result['text_regions']):
+                        st.session_state['region_actions'].append('translate')
+                    if len(st.session_state['region_actions']) > len(result['text_regions']):
+                        st.session_state['region_actions'] = st.session_state['region_actions'][:len(result['text_regions'])]
+                    
+                    # Control buttons for 3-state system
                     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
                     
                     with col_btn1:
-                        if st.button("✅ Select All", key="select_all_regions"):
-                            st.session_state['selected_regions'] = [True] * len(result['text_regions'])
+                        if st.button("🌍 Translate All", key="translate_all_regions"):
+                            st.session_state['region_actions'] = ['translate'] * len(result['text_regions'])
+                            st.success(f"Set all {len(result['text_regions'])} regions to TRANSLATE")
                             st.rerun()
                     
                     with col_btn2:
-                        if st.button("❌ Deselect All", key="deselect_all_regions"):
-                            st.session_state['selected_regions'] = [False] * len(result['text_regions'])
+                        if st.button("📝 Keep All", key="keep_all_regions"):
+                            st.session_state['region_actions'] = ['keep'] * len(result['text_regions'])
+                            st.success(f"Set all {len(result['text_regions'])} regions to KEEP")
                             st.rerun()
                     
                     with col_btn3:
-                        if st.button("🎯 High Confidence Only", key="high_conf_only"):
-                            st.session_state['selected_regions'] = [
-                                region.get('confidence', 0) > 0.8 
-                                for region in result['text_regions']
-                            ]
+                        if st.button("🗑️ Remove All", key="remove_all_regions"):
+                            st.session_state['region_actions'] = ['remove'] * len(result['text_regions'])
+                            st.success(f"Set all {len(result['text_regions'])} regions to REMOVE")
                             st.rerun()
                     
                     with col_btn4:
-                        selected_count = sum(st.session_state['selected_regions'])
-                        total_count = len(result['text_regions'])
-                        st.metric("Selected", f"{selected_count}/{total_count}")
+                        # Count actions
+                        translate_count = st.session_state['region_actions'].count('translate')
+                        keep_count = st.session_state['region_actions'].count('keep')
+                        remove_count = st.session_state['region_actions'].count('remove')
+                        st.metric("Actions", f"🌍{translate_count} 📝{keep_count} 🗑️{remove_count}")
                     
-                    # Interactive OCR visualization
-                    ocr_html = create_ocr_visualization_html(
+                    # Interactive OCR visualization with 3-state system
+                    ocr_html = create_ocr_visualization_html_3state(
                         result['original_image'], 
                         result['text_regions'],
-                        st.session_state['selected_regions']
+                        st.session_state['region_actions']
                     )
                     
-                    # JavaScript for region toggling
+                    # JavaScript for 3-state region toggling
                     ocr_js = '''
                     <script>
-                    function toggleRegion(regionIndex) {
+                    function toggleRegionAction(regionIndex) {
+                        console.log('=== toggleRegionAction START ===', regionIndex);
+                        
                         const regionEl = document.getElementById('ocr-region-' + regionIndex);
-                        if (!regionEl) return;
-                        
-                        // Toggle selection state
-                        const isSelected = regionEl.classList.contains('selected');
-                        const newState = !isSelected;
-                        
-                        // Update visual state
-                        if (newState) {
-                            regionEl.classList.remove('unselected');
-                            regionEl.classList.add('selected');
-                        } else {
-                            regionEl.classList.remove('selected');
-                            regionEl.classList.add('unselected');
+                        if (!regionEl) {
+                            console.error('Region element not found:', regionIndex);
+                            return;
                         }
                         
-                        // Update colors based on confidence
-                        const titleText = regionEl.title;
-                        const confidence = parseFloat(titleText.split('Confidence: ')[1]);
-                        const borderColor = newState ? (confidence > 0.8 ? '#22c55e' : '#ef4444') : '#6b7280';
-                        const bgColor = newState ? (confidence > 0.8 ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)') : 'rgba(107, 114, 128, 0.05)';
+                        // Get current action from data attribute
+                        const currentAction = regionEl.getAttribute('data-action');
+                        console.log('Current action:', currentAction);
+                        
+                        // Cycle through actions: translate -> keep -> remove -> translate
+                        let newAction;
+                        if (currentAction === 'translate') {
+                            newAction = 'keep';
+                        } else if (currentAction === 'keep') {
+                            newAction = 'remove';
+                        } else {
+                            newAction = 'translate';
+                        }
+                        console.log('New action:', newAction);
+                        
+                        // STEP 1: Update data-action attribute FIRST
+                        regionEl.setAttribute('data-action', newAction);
+                        console.log('Updated data-action attribute to:', newAction);
+                        
+                        // STEP 2: Update visual appearance
+                        updateRegionVisuals(regionEl, newAction, regionIndex);
+                        
+                        // STEP 3: Update global state with proper timing
+                        setTimeout(() => {
+                            updateGlobalState(regionIndex, newAction);
+                        }, 10);
+                        
+                        console.log('=== toggleRegionAction END ===');
+                    }
+                    
+                    function updateRegionVisuals(regionEl, newAction, regionIndex) {
+                        console.log('Updating visuals for region', regionIndex, 'to', newAction);
+                        
+                        // Update CSS class
+                        regionEl.className = 'ocr-region ocr-' + newAction;
+                        
+                        // Update colors and icon based on new action
+                        let borderColor, bgColor, icon, iconBg;
+                        if (newAction === 'translate') {
+                            borderColor = '#22c55e';
+                            bgColor = 'rgba(34, 197, 94, 0.15)';
+                            icon = '🌍';
+                            iconBg = '#22c55e';
+                        } else if (newAction === 'keep') {
+                            borderColor = '#3b82f6';
+                            bgColor = 'rgba(59, 130, 246, 0.15)';
+                            icon = '📝';
+                            iconBg = '#3b82f6';
+                        } else { // remove
+                            borderColor = '#ef4444';
+                            bgColor = 'rgba(239, 68, 68, 0.15)';
+                            icon = '🗑️';
+                            iconBg = '#ef4444';
+                        }
                         
                         regionEl.style.borderColor = borderColor;
                         regionEl.style.background = bgColor;
                         
-                        // Update checkbox indicator
-                        const checkbox = regionEl.children[0];
-                        checkbox.style.background = newState ? '#22c55e' : '#6b7280';
-                        checkbox.textContent = newState ? '✓' : '';
-                        
-                        // Update Streamlit
-                        const streamlitInput = document.querySelector('input[data-testid*="region-selection"]');
-                        if (streamlitInput) {
-                            let selections = JSON.parse(streamlitInput.value || '[]');
-                            while (selections.length <= regionIndex) selections.push(true);
-                            selections[regionIndex] = newState;
-                            streamlitInput.value = JSON.stringify(selections);
-                            streamlitInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        // Update action indicator
+                        const actionIndicator = regionEl.children[0];
+                        if (actionIndicator) {
+                            actionIndicator.style.background = iconBg;
+                            actionIndicator.textContent = icon;
                         }
+                        
+                        // Update title
+                        const titleParts = regionEl.title.split(' | ');
+                        regionEl.title = 'Action: ' + newAction.toUpperCase() + ' | ' + titleParts.slice(1).join(' | ');
+                        
+                        console.log('Visual update complete for region', regionIndex);
+                    }
+                    
+                    function updateGlobalState(regionIndex, newAction) {
+                        console.log('=== updateGlobalState START ===', regionIndex, newAction);
+                        
+                        // Read ALL current data-action attributes to build complete state
+                        const allRegions = document.querySelectorAll('.ocr-region');
+                        const actions = [];
+                        
+                        allRegions.forEach((region, index) => {
+                            const action = region.getAttribute('data-action') || 'translate';
+                            actions.push(action);
+                            console.log('Region', index, 'data-action:', action);
+                        });
+                        
+                        console.log('Complete actions array:', actions);
+                        
+                        // Update global state
+                        if (window.updateRegionActions) {
+                            window.updateRegionActions(actions);
+                        } else {
+                            console.error('window.updateRegionActions not found');
+                        }
+                        
+                        console.log('=== updateGlobalState END ===');
                     }
                     </script>
                     '''
@@ -1549,21 +1751,103 @@ def main():
                     # Display interactive OCR
                     st.components.v1.html(ocr_html + ocr_js, height=400)
                     
-                    # Hidden input for region selections
-                    region_selections = st.text_input(
-                        "region-selection",
-                        value=json.dumps(st.session_state['selected_regions']),
-                        key="region_selection_input",
-                        label_visibility="hidden"
+                    # Debug display - show current actions
+                    with st.expander("🔍 Debug: Current Region Actions", expanded=False):
+                        for i, action in enumerate(st.session_state['region_actions']):
+                            region_text = result['text_regions'][i]['text'][:30] if i < len(result['text_regions']) else "N/A"
+                            st.write(f"Region {i}: **{action}** - '{region_text}...'")
+                    
+                    # Hidden input for region actions with explicit ID
+                    region_actions_json = st.text_input(
+                        "region-actions",
+                        value=json.dumps(st.session_state['region_actions']),
+                        key="region_actions_input",
+                        label_visibility="hidden",
+                        help="JavaScript communication channel"
                     )
                     
-                    # Update selections
+                    
+                    # Update actions
                     try:
-                        new_selections = json.loads(region_selections)
-                        if new_selections != st.session_state['selected_regions']:
-                            st.session_state['selected_regions'] = new_selections
+                        new_actions = json.loads(region_actions_json)
+                        if new_actions != st.session_state['region_actions']:
+                            st.session_state['region_actions'] = new_actions
+                            st.rerun()
                     except:
                         pass
+                    
+                    # Reprocess button to apply region actions
+                    st.write("")
+                    if st.button("🔄 Apply Actions & Reprocess", key="reprocess_with_actions", type="secondary"):
+                        if result['success']:
+                            with st.spinner("Reprocessing with your actions..."):
+                                # Apply current region actions to existing text regions
+                                for i, region in enumerate(result['text_regions']):
+                                    if i < len(st.session_state['region_actions']):
+                                        action = st.session_state['region_actions'][i]
+                                        region['action'] = action
+                                        
+                                        # Update region data based on action
+                                        if action == 'keep':
+                                            region['translated_text'] = region['text']  # Keep original
+                                            region['translation_quality'] = 1.0
+                                            region['action_taken'] = 'kept_original'
+                                        elif action == 'remove':
+                                            region['translated_text'] = ''  # Remove text
+                                            region['translation_quality'] = 0.0
+                                            region['should_remove'] = True
+                                            region['action_taken'] = 'removed'
+                                        # translate action keeps existing translation
+                                
+                                # Reprocess only the image rendering part
+                                try:
+                                    # Get engines
+                                    ocr_engine, translation_engine, image_processor = engines
+                                    processed_image, scale_factor = image_processor.resize_for_processing(result['original_image'])
+                                    
+                                    # Create mask only for regions that need inpainting (translate + remove)
+                                    regions_to_inpaint = [
+                                        region for region in result['text_regions'] 
+                                        if region.get('action', 'translate') in ['translate', 'remove']
+                                    ]
+                                    
+                                    if regions_to_inpaint:
+                                        mask = image_processor.create_enhanced_mask(processed_image, regions_to_inpaint)
+                                        inpainted_image = image_processor.enhanced_inpainting(processed_image, mask)
+                                    else:
+                                        inpainted_image = processed_image.copy()
+                                    
+                                    # Only render text for regions that should have text (not removed regions)
+                                    regions_to_render = [
+                                        region for region in result['text_regions'] 
+                                        if region.get('action', 'translate') != 'remove' and region.get('translated_text', '')
+                                    ]
+                                    
+                                    final_image = image_processor.add_translated_text(inpainted_image, regions_to_render)
+                                    
+                                    # Scale back to original size if needed
+                                    if scale_factor != 1.0:
+                                        final_size = (
+                                            int(final_image.width / scale_factor),
+                                            int(final_image.height / scale_factor)
+                                        )
+                                        final_image = final_image.resize(final_size, Image.Resampling.LANCZOS)
+                                        inpainted_image = inpainted_image.resize(final_size, Image.Resampling.LANCZOS)
+                                    
+                                    # Update result with new images
+                                    result['inpainted_image'] = inpainted_image
+                                    result['final_image'] = final_image
+                                    result['inpainted_base'] = inpainted_image
+                                    
+                                    # Update session state
+                                    st.session_state['processing_result'] = result
+                                    st.success(f"✅ Reprocessed with actions: {len([r for r in result['text_regions'] if r.get('action') == 'translate'])} translated, {len([r for r in result['text_regions'] if r.get('action') == 'keep'])} kept, {len([r for r in result['text_regions'] if r.get('action') == 'remove'])} removed")
+                                    st.rerun()
+                                    
+                                except Exception as e:
+                                    st.error(f"Error during reprocessing: {e}")
+                                    logger.error(f"Reprocessing error: {e}")
+                                    
                 
                 with step_tabs[2]:
                     if result.get('inpainted_image'):
