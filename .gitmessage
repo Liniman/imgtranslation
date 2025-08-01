@@ -1,0 +1,23 @@
+# <type>: <subject>
+#
+# <body>
+#
+# <footer>
+
+# Type should be one of the following:
+# * feat (new feature)
+# * fix (bug fix)
+# * docs (documentation)
+# * style (formatting, missing semi colons, etc; no code change)
+# * refactor (refactoring production code)
+# * test (adding tests, refactoring test; no production code change)
+# * chore (updating build tasks, package manager configs, etc; no production code change)
+
+# Subject should use imperative mood and not end with period
+# No more than 50 characters
+
+# Body should explain what and why vs. how
+# Can use multiple lines with "-" for bullet points
+# Wrap at 72 characters
+
+# Footer should contain any JIRA ticket numbers like "Fixes PROJ-123" or "Closes #123"
