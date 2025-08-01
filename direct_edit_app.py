@@ -477,7 +477,7 @@ def load_engines():
         st.stop()
 
 def create_ocr_visualization_html_3state(image: Image.Image, text_regions: List[Dict], 
-                                        region_actions: List[str] = None) -> str:
+                                        region_actions: List[str] = None) -> Tuple[str, int]:
     """
     Create HTML for OCR visualization with 3-state action control.
     
@@ -487,7 +487,7 @@ def create_ocr_visualization_html_3state(image: Image.Image, text_regions: List[
         region_actions: List of actions for each region ('translate', 'keep', 'remove')
         
     Returns:
-        HTML string with 3-state OCR region controls
+        Tuple of (HTML string with 3-state OCR region controls, display_height)
     """
     if region_actions is None:
         region_actions = ['translate'] * len(text_regions)
@@ -497,17 +497,26 @@ def create_ocr_visualization_html_3state(image: Image.Image, text_regions: List[
     image.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode()
     
-    # Calculate image display dimensions - use container width or max 1000px
-    max_width = min(1000, image.width)
-    max_height = 600  # Max height to prevent very tall images
+    # Calculate image display dimensions dynamically
+    max_width = 1000  # Maximum width for display
+    aspect_ratio = image.height / image.width
     
-    # Calculate scaling to fit within bounds while maintaining aspect ratio
-    width_scale = max_width / image.width
-    height_scale = max_height / image.height
-    scale = min(width_scale, height_scale, 1.0)  # Don't upscale
+    # Start with width constraint
+    if image.width > max_width:
+        display_width = max_width
+        display_height = int(max_width * aspect_ratio)
+    else:
+        display_width = image.width
+        display_height = image.height
     
-    display_width = int(image.width * scale)
-    display_height = int(image.height * scale)
+    # Apply reasonable height limit only if extremely tall
+    max_height = 1200  # More generous height limit
+    if display_height > max_height:
+        display_height = max_height
+        display_width = int(display_height / aspect_ratio)
+    
+    # Calculate scale for positioning overlays
+    scale = display_width / image.width
     
     # Scale factors for positioning overlays
     scale_x = display_width / image.width
@@ -606,7 +615,7 @@ def create_ocr_visualization_html_3state(image: Image.Image, text_regions: List[
     
     html_parts.append('</div>')
     
-    return '\n'.join(html_parts)
+    return '\n'.join(html_parts), display_height
 
 def create_clickable_image_html(image: Image.Image, text_regions: List[Dict], 
                                image_id: str = "main-image") -> str:
@@ -1631,7 +1640,7 @@ def main():
                         st.metric("Actions", f"🌍{translate_count} 📝{keep_count} 🗑️{remove_count}")
                     
                     # Interactive OCR visualization with 3-state system
-                    ocr_html = create_ocr_visualization_html_3state(
+                    ocr_html, display_height = create_ocr_visualization_html_3state(
                         result['original_image'], 
                         result['text_regions'],
                         st.session_state['region_actions']
@@ -1748,8 +1757,10 @@ def main():
                     </script>
                     '''
                     
-                    # Display interactive OCR
-                    st.components.v1.html(ocr_html + ocr_js, height=400)
+                    # Display interactive OCR with dynamic height
+                    # Add padding for controls and UI elements
+                    container_height = display_height + 100
+                    st.components.v1.html(ocr_html + ocr_js, height=container_height)
                     
                     # Debug display - show current actions
                     with st.expander("🔍 Debug: Current Region Actions", expanded=False):
