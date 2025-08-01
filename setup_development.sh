@@ -5,10 +5,29 @@
 
 echo "🛠️  Setting up development workflow..."
 
+# Check if GitHub CLI is available for enhanced features
+GH_AVAILABLE=false
+if command -v gh &> /dev/null && gh auth status &> /dev/null; then
+    GH_AVAILABLE=true
+fi
+
 # Create develop branch
 echo "Creating develop branch..."
 git checkout -b develop
 git push -u origin develop
+
+# Set up branch protection for develop if GitHub CLI is available
+if [ "$GH_AVAILABLE" = true ]; then
+    echo "🛡️  Setting up branch protection for develop..."
+    gh api repos/$(gh api user --jq .login)/imgtranslation/branches/develop/protection \
+        --method PUT \
+        --field required_status_checks='{"strict":true,"contexts":["test"]}' \
+        --field enforce_admins=false \
+        --field required_pull_request_reviews='{"required_approving_review_count":1}' \
+        --field restrictions=null \
+        --field allow_force_pushes=false \
+        --field allow_deletions=false || echo "⚠️  Branch protection setup failed"
+fi
 
 # Set up feature branch for current UI work
 echo "Creating feature branch for ongoing work..."
