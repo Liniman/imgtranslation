@@ -1,48 +1,76 @@
 """
-Translation engine with multiple provider support and quality filtering.
+DeepL-powered translation engine for superior context-aware translation quality.
 """
 
-from googletrans import Translator
 from typing import List, Dict, Optional, Tuple
 import logging
 import time
 import re
+import requests
+import os
+from .memory_tracker import track_memory, memory_snapshot
 
 logger = logging.getLogger(__name__)
 
+# Load environment variables from .env file
+def load_env_file():
+    """Load environment variables from .env file if it exists."""
+    env_path = '.env'
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key] = value
+
+# Load .env on import
+load_env_file()
+
 
 class TranslationEngine:
-    """Enhanced translation engine with fallback providers and quality checks."""
+    """DeepL-powered translation engine for superior context-aware translation."""
     
-    def __init__(self, primary_provider: str = 'google', fallback_providers: List[str] = None):
+    def __init__(self, primary_provider: str = 'deepl'):
         """
-        Initialize translation engine.
+        Initialize translation engine with DeepL only.
         
         Args:
-            primary_provider: Primary translation service ('google')
-            fallback_providers: List of fallback providers (currently only 'google')
+            primary_provider: Translation service (only 'deepl' supported)
         """
+        if primary_provider != 'deepl':
+            raise ValueError("Only DeepL provider is supported. Use 'deepl' as primary_provider.")
+            
         self.primary_provider = primary_provider
-        self.fallback_providers = fallback_providers or []
+        self.fallback_providers = []  # No fallbacks - DeepL only
         self.providers = {}
         self.translation_cache = {}
+        
+        # DeepL API settings
+        self.deepl_api_key = os.getenv('DEEPL_API_KEY')
+        self.deepl_free_api = True  # Use free API by default
         
         self._initialize_providers()
     
     def _initialize_providers(self):
-        """Initialize translation service providers."""
+        """Initialize DeepL translation service."""
         try:
-            # Initialize Google Translate
-            if self.primary_provider == 'google' or 'google' in self.fallback_providers:
-                self.providers['google'] = Translator()
-                logger.info("Google Translate initialized successfully")
+            if not self.deepl_api_key:
+                raise ValueError(
+                    "DeepL API key not found. Please set DEEPL_API_KEY environment variable. "
+                    "Run 'python setup_deepl.py' to configure."
+                )
             
-            logger.info(f"Translation engine initialized with providers: {list(self.providers.keys())}")
+            # Test DeepL API connection
+            self.providers['deepl'] = True
+            logger.info("DeepL API initialized successfully")
+            logger.info("Translation engine using DeepL exclusively for premium quality")
             
         except Exception as e:
-            logger.error(f"Failed to initialize translation providers: {e}")
+            logger.error(f"Failed to initialize DeepL: {e}")
             raise
     
+    @track_memory("translate_text")
     def translate_text(self, text: str, target_lang: str, source_lang: str = 'auto') -> Tuple[str, float]:
         """
         Translate text to target language.
@@ -66,97 +94,125 @@ class TranslationEngine:
         if not cleaned_text:
             return text, 0.0
         
-        # Try primary provider first
-        result = self._translate_with_provider(cleaned_text, target_lang, source_lang, self.primary_provider)
+        # Use DeepL exclusively
+        result = self._translate_with_deepl(cleaned_text, target_lang, source_lang)
         
-        if result[1] > 0.5:  # Good quality translation
-            self.translation_cache[cache_key] = result
-            return result
-        
-        # Try fallback providers if primary failed
-        for provider in self.fallback_providers:
-            if provider in self.providers:
-                logger.info(f"Trying fallback provider: {provider}")
-                result = self._translate_with_provider(cleaned_text, target_lang, source_lang, provider)
-                if result[1] > 0.5:
-                    self.translation_cache[cache_key] = result
-                    return result
-        
-        # Return best attempt or original text
-        self.translation_cache[cache_key] = result if result[1] > 0 else (text, 0.0)
-        return self.translation_cache[cache_key]
+        # Cache and return result
+        self.translation_cache[cache_key] = result
+        return result
     
-    def _get_supplement_dictionary(self, target_lang: str) -> Dict[str, str]:
-        """Get supplement-specific translation dictionary."""
-        if target_lang == 'uk':  # Ukrainian
-            return {
-                'softgel': 'м\'яка капсула',
-                'liquid softgel': 'рідка м\'яка капсула', 
-                'capsule': 'капсула',
-                'tablet': 'таблетка',
-                'daily': 'щодня',
-                'take': 'приймайте',
-                'take 1': 'приймайте 1',
-                'omega-3': 'омега-3',
-                'fish oil': 'риб\'ячий жир',
-                'triple strength': 'потрійна сила',
-                'mg': 'мг',
-                'mcg': 'мкг'
-            }
-        return {}
     
-    def _apply_supplement_dictionary(self, text: str, translated: str, target_lang: str) -> str:
-        """Apply supplement-specific terminology corrections."""
-        dictionary = self._get_supplement_dictionary(target_lang)
-        
-        # Apply dictionary replacements
-        corrected = translated
-        for english_term, target_term in dictionary.items():
-            # Case-insensitive replacement
-            pattern = re.compile(re.escape(english_term), re.IGNORECASE)
-            corrected = pattern.sub(target_term, corrected)
-        
-        return corrected
     
-    def _translate_with_provider(self, text: str, target_lang: str, source_lang: str, provider: str) -> Tuple[str, float]:
+    def _translate_with_deepl(self, text: str, target_lang: str, source_lang: str) -> Tuple[str, float]:
         """
-        Translate text using specific provider with domain-specific improvements.
+        Translate text using DeepL API for superior context-aware translation.
         
         Args:
             text: Text to translate
             target_lang: Target language code
             source_lang: Source language code
-            provider: Provider name
             
         Returns:
             Tuple of (translated_text, quality_score)
         """
-        if provider not in self.providers:
-            logger.error(f"Provider {provider} not available")
-            return text, 0.0
-        
         try:
-            if provider == 'google':
-                translator = self.providers['google']
+            # Map language codes to DeepL format
+            deepl_target = self._map_to_deepl_lang(target_lang)
+            deepl_source = self._map_to_deepl_lang(source_lang) if source_lang != 'auto' else None
+            
+            if not deepl_target:
+                logger.warning(f"Target language {target_lang} not supported by DeepL")
+                return text, 0.0
+            
+            # Use free or pro API endpoint
+            if self.deepl_free_api:
+                url = "https://api-free.deepl.com/v2/translate"
+            else:
+                url = "https://api.deepl.com/v2/translate"
+            
+            # Prepare request
+            headers = {
+                'Authorization': f'DeepL-Auth-Key {self.deepl_api_key}',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+            
+            data = {
+                'text': text,
+                'target_lang': deepl_target,
+                'preserve_formatting': '1',  # Maintain text formatting
+                'formality': 'default'  # Use default formality level
+            }
+            
+            if deepl_source:
+                data['source_lang'] = deepl_source
+            
+            # Make request with timeout
+            response = requests.post(url, headers=headers, data=data, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                translated = result['translations'][0]['text']
+                detected_source = result['translations'][0].get('detected_source_language', 'unknown')
                 
-                # Handle rate limiting
-                time.sleep(0.1)  # Small delay to avoid rate limits
+                # Calculate quality score - DeepL typically produces high-quality results
+                quality = self._calculate_translation_quality(text, translated, target_lang)
                 
-                result = translator.translate(text, dest=target_lang, src=source_lang)
-                translated = result.text
+                # Boost quality score for DeepL as it's generally more context-aware
+                quality = min(quality * 1.2, 1.0)
                 
-                # Apply domain-specific corrections
-                corrected = self._apply_supplement_dictionary(text, translated, target_lang)
+                logger.debug(f"DeepL Translate: '{text}' -> '{translated}' (detected: {detected_source}, quality: {quality:.2f})")
+                return translated, quality
                 
-                # Calculate quality score on corrected translation
-                quality = self._calculate_translation_quality(text, corrected, target_lang)
+            elif response.status_code == 403:
+                logger.error("DeepL API authentication failed - check API key")
+                return text, 0.0
+            elif response.status_code == 456:
+                logger.error("DeepL API quota exceeded")
+                return text, 0.0
+            else:
+                logger.error(f"DeepL API error: {response.status_code} - {response.text}")
+                return text, 0.0
                 
-                logger.debug(f"Google Translate: '{text}' -> '{translated}' -> '{corrected}' (quality: {quality:.2f})")
-                return corrected, quality
-                
-        except Exception as e:
-            logger.error(f"Translation failed with {provider}: {e}")
+        except requests.exceptions.Timeout:
+            logger.error("DeepL API request timed out")
             return text, 0.0
+        except Exception as e:
+            logger.error(f"DeepL translation failed: {e}")
+            return text, 0.0
+    
+    def _map_to_deepl_lang(self, lang_code: str) -> Optional[str]:
+        """
+        Map language codes to DeepL-supported format.
+        
+        Args:
+            lang_code: Standard language code
+            
+        Returns:
+            DeepL language code or None if not supported
+        """
+        deepl_mapping = {
+            'uk': 'UK',  # Ukrainian
+            'en': 'EN',  # English
+            'es': 'ES',  # Spanish
+            'fr': 'FR',  # French
+            'de': 'DE',  # German
+            'it': 'IT',  # Italian
+            'pt': 'PT',  # Portuguese
+            'ru': 'RU',  # Russian
+            'ja': 'JA',  # Japanese
+            'ko': 'KO',  # Korean
+            'zh': 'ZH',  # Chinese
+            'nl': 'NL',  # Dutch
+            'sv': 'SV',  # Swedish
+            'da': 'DA',  # Danish
+            'no': 'NB',  # Norwegian (Bokmål)
+            'fi': 'FI',  # Finnish
+            'pl': 'PL',  # Polish
+            'cs': 'CS',  # Czech
+            'hu': 'HU',  # Hungarian
+            'tr': 'TR',  # Turkish
+        }
+        return deepl_mapping.get(lang_code.lower())
     
     def _clean_text(self, text: str) -> str:
         """
@@ -179,16 +235,15 @@ class TranslationEngine:
         cleaned = re.sub(r'\.{4,}', '...', cleaned)  # Normalize multiple dots
         cleaned = re.sub(r',{2,}', ',', cleaned)  # Remove multiple commas
         
-        # Context-aware cleaning for supplements/medical text
-        # Fix common supplement text patterns
-        supplement_patterns = {
-            r'Take\s+(\d+)\s+liquid': r'Take \1 liquid softgel',  # Fix incomplete OCR
-            r'softgel\s+daily': 'softgel daily',  # Normalize spacing
+        # Basic text normalization (let the AI translate intelligently)
+        patterns = {
             r'(\d+)\s*mg': r'\1 mg',  # Fix spacing in dosages
             r'(\d+)\s*mcg': r'\1 mcg',  # Fix spacing in dosages
+            r'(\d+)\s*ml': r'\1 ml',  # Fix spacing in volumes
+            r'(\d+)\s*%': r'\1%',  # Fix spacing in percentages
         }
         
-        for pattern, replacement in supplement_patterns.items():
+        for pattern, replacement in patterns.items():
             cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
         
         return cleaned.strip()
@@ -230,22 +285,14 @@ class TranslationEngine:
                 elif latin_ratio > 0.8:  # Mostly untranslated - very bad!
                     score *= 0.1
         
-        # Check for untranslated technical terms that should be translated
-        untranslated_terms = ['softgel', 'capsule', 'tablet', 'liquid', 'daily', 'take']
-        untranslated_count = sum(1 for term in untranslated_terms 
-                               if term.lower() in translated.lower())
-        if untranslated_count > 0:
-            score *= max(0.3, 1.0 - (untranslated_count * 0.2))
-        
-        # Check for literal translation issues
-        literal_issues = [
-            ('liquid', 'рідину'),  # Wrong context - should be about capsules
-            ('take 1 liquid', 'візьміть 1 рідину'),  # Completely wrong context
-        ]
-        
-        for original_phrase, bad_translation in literal_issues:
-            if original_phrase.lower() in original.lower() and bad_translation.lower() in translated.lower():
-                score *= 0.1  # Very bad literal translation
+        # Check for obvious untranslated English words (but be less strict)
+        english_word_pattern = r'\b[a-zA-Z]{3,}\b'
+        english_words = re.findall(english_word_pattern, translated)
+        if english_words and target_lang not in ['en']:
+            # Only penalize if there are many untranslated words
+            english_ratio = len(english_words) / max(len(translated.split()), 1)
+            if english_ratio > 0.5:  # More than half the words are English
+                score *= 0.6
         
         # Check for common translation errors
         error_indicators = [
@@ -263,6 +310,7 @@ class TranslationEngine:
         
         return min(score, 1.0)
     
+    @track_memory("translate_batch")
     def translate_batch(self, texts: List[str], target_lang: str, source_lang: str = 'auto') -> List[Tuple[str, float]]:
         """
         Translate multiple texts efficiently.
